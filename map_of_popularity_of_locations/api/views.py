@@ -3,6 +3,14 @@ from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
 from api.models import Location
+from .helpers import (
+    get_export_csv_cache_key,
+    get_likes_dislikes_cache_key,
+    get_location_detail_cache_key,
+    get_location_list_cache_key,
+    get_reviews_cache_key,
+    get_subscription_cache_key,
+)
 from .filters import LocationFilter
 from .serializers import LocationSerializer
 from rest_framework.decorators import action
@@ -16,6 +24,7 @@ from rest_framework.views import APIView
 import csv
 import io
 from django.core.mail import send_mail
+from django.core.cache import cache
 
 
 class LocationViewSet(ModelViewSet):
@@ -26,6 +35,46 @@ class LocationViewSet(ModelViewSet):
     filterset_class = LocationFilter
     search_fields = ["title", "description"]
 
+    def get_queryset(self):
+        search_param = self.request.GET.get("search", "")
+        category_param = self.request.GET.get("category", "")
+        cache_key = get_location_list_cache_key(search_param, category_param)
+
+        cached_locations = cache.get(cache_key)
+        if cached_locations:
+            return cached_locations
+
+        queryset = Location.objects.all()
+
+        if search_param:
+            queryset = queryset.filter(title__icontains=search_param)
+        if category_param:
+            queryset = queryset.filter(category=category_param)
+
+        cache.set(cache_key, queryset, timeout=300)
+        return queryset
+
+    def perform_create(self, serializer):
+        location = serializer.save()
+        (
+            cache.delete_pattern("locations:list:*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+        return location
+
+    def perform_update(self, serializer):
+        location = serializer.save()
+        cache_key = get_location_detail_cache_key(location.id)
+        cache.delete(cache_key)
+        (
+            cache.delete_pattern("locations:list:*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+        cache.delete(get_export_csv_cache_key())
+        return location
+
     @action(detail=False, methods=["post"], url_path="subscribe")
     def subscribe(self, request):
         user = request.user
@@ -33,6 +82,12 @@ class LocationViewSet(ModelViewSet):
 
         if not location_id:
             return Response({"detail": "Location ID is required."}, status=400)
+
+        cache_key = get_subscription_cache_key(user.id, location_id)
+        cached_subscription = cache.get(cache_key)
+
+        if cached_subscription:
+            return Response({"detail": "Already subscribed."}, status=400)
 
         try:
             location = Location.objects.get(id=location_id)
@@ -43,6 +98,8 @@ class LocationViewSet(ModelViewSet):
             return Response({"detail": "Already subscribed."}, status=400)
 
         LocationSubscription.objects.create(user=user, location=location)
+
+        cache.set(cache_key, True, timeout=3600)
 
         send_mail(
             subject="Ви підписались на локацію",
@@ -61,6 +118,7 @@ class LocationViewSet(ModelViewSet):
         subscription = LocationSubscription.objects.filter(
             user=user, location=location
         ).first()
+
         if not subscription:
             return Response(
                 {"detail": "Not subscribed to this location."},
@@ -68,6 +126,10 @@ class LocationViewSet(ModelViewSet):
             )
 
         subscription.delete()
+
+        cache_key = get_subscription_cache_key(user.id, location.id)
+        cache.delete(cache_key)
+
         return Response(
             {"detail": "Unsubscribed successfully."}, status=status.HTTP_200_OK
         )
@@ -80,6 +142,12 @@ class LocationViewSet(ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="export/csv")
     def export_csv(self, request):
+        cache_key = get_export_csv_cache_key()
+        cached_export = cache.get(cache_key)
+
+        if cached_export:
+            return cached_export
+
         locations = self.get_queryset()
 
         output = io.StringIO()
@@ -111,12 +179,25 @@ class LocationViewSet(ModelViewSet):
 
         response = Response(output.getvalue(), content_type="text/csv")
         response["Content-Disposition"] = "attachment; filename=locations.csv"
+        cache.set(cache_key, response, timeout=600)
         return response
 
-    def destroy(self, request, *args, **kwargs):
-        instance = self.get_object()
-        self.perform_destroy(instance)
-        return Response({"detail": "Location deleted."}, status=status.HTTP_200_OK)
+    def perform_destroy(self, instance):
+        location_id = instance.id
+        cache_key = get_location_detail_cache_key(location_id)
+        cache.delete(cache_key)
+        (
+            cache.delete_pattern(f"reviews:location:{location_id}*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+        (
+            cache.delete_pattern("locations:list:*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+        cache.delete(get_export_csv_cache_key())
+        instance.delete()
 
 
 class ReviewViewSet(ModelViewSet):
@@ -128,25 +209,92 @@ class ReviewViewSet(ModelViewSet):
         user = self.request.user
 
         if location_id:
-            return Review.objects.filter(location_id=location_id)
+            cache_key = get_reviews_cache_key(location_id, user.id)
+            cached_reviews = cache.get(cache_key)
+
+            if cached_reviews:
+                return cached_reviews
+
+            queryset = Review.objects.filter(location_id=location_id)
         else:
+            cache_key = f"reviews:user:{user.id}:subscribed"
+            cached_reviews = cache.get(cache_key)
+
+            if cached_reviews:
+                return cached_reviews
+
             subscribed_locations = LocationSubscription.objects.filter(user=user)
             location_ids = [
                 subscription.location.id for subscription in subscribed_locations
             ]
-            return Review.objects.filter(location_id__in=location_ids)
+            queryset = Review.objects.filter(location_id__in=location_ids)
+
+        cache.set(cache_key, queryset, timeout=60 * 15)
+        return queryset
 
     def perform_create(self, serializer):
-        review = serializer.save(
-            user=self.request.user, location_id=self.kwargs["location_pk"]
-        )
+        location_id = self.kwargs["location_pk"]
+        review = serializer.save(user=self.request.user, location_id=location_id)
+
         review.location.update_average_rating()
+
+        (
+            cache.delete_pattern(f"reviews:location:{location_id}*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+
+        cache.delete(get_location_detail_cache_key(location_id))
+
+        (
+            cache.delete_pattern("locations:list:*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+
+    def perform_update(self, serializer):
+        review = serializer.save()
+        location = review.location
+
+        location.update_average_rating()
+
+        (
+            cache.delete_pattern(f"reviews:location:{location.id}*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+
+        cache.delete(get_location_detail_cache_key(location.id))
+
+        (
+            cache.delete_pattern("locations:list:*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         location = instance.location
+        location_id = location.id
+
         self.perform_destroy(instance)
+
         location.update_average_rating()
+
+        (
+            cache.delete_pattern(f"reviews:location:{location_id}*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+
+        cache.delete(get_location_detail_cache_key(location_id))
+
+        (
+            cache.delete_pattern("locations:list:*")
+            if hasattr(cache, "delete_pattern")
+            else None
+        )
+
         return Response({"detail": "Review deleted."}, status=status.HTTP_200_OK)
 
 
@@ -154,6 +302,12 @@ class LikeDislikeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, review_pk, *args, **kwargs):
+        cache_key = get_likes_dislikes_cache_key(review_pk)
+        cached_data = cache.get(cache_key)
+
+        if cached_data:
+            return Response(cached_data, status=status.HTTP_200_OK)
+
         try:
             review = Review.objects.get(pk=review_pk)
         except Review.DoesNotExist:
@@ -164,10 +318,11 @@ class LikeDislikeView(APIView):
         likes_count = review.likes_dislikes.filter(is_like=True).count()
         dislikes_count = review.likes_dislikes.filter(is_like=False).count()
 
-        return Response(
-            {"likes_count": likes_count, "dislikes_count": dislikes_count},
-            status=status.HTTP_200_OK,
-        )
+        response_data = {"likes_count": likes_count, "dislikes_count": dislikes_count}
+
+        cache.set(cache_key, response_data, timeout=300)
+
+        return Response(response_data, status=status.HTTP_200_OK)
 
     def post(self, request, review_pk, *args, **kwargs):
         try:
@@ -191,6 +346,16 @@ class LikeDislikeView(APIView):
         if created or like_dislike.is_like != is_like:
             like_dislike.is_like = is_like
             like_dislike.save()
+
+            location_id = review.location.id
+            (
+                cache.delete_pattern(f"reviews:location:{location_id}*")
+                if hasattr(cache, "delete_pattern")
+                else None
+            )
+
+            cache.delete(get_likes_dislikes_cache_key(review_pk))
+
             return Response(
                 {
                     "detail": f"{'Like' if is_like else 'Dislike'} {'added' if created else 'updated'} successfully."
@@ -204,7 +369,19 @@ class LikeDislikeView(APIView):
             like_dislike = LikeDislike.objects.get(
                 user=request.user, review__id=review_pk
             )
+            review = like_dislike.review
+            location_id = review.location.id
+
             like_dislike.delete()
+
+            (
+                cache.delete_pattern(f"reviews:location:{location_id}*")
+                if hasattr(cache, "delete_pattern")
+                else None
+            )
+
+            cache.delete(get_likes_dislikes_cache_key(review_pk))
+
             return Response(
                 {"detail": "Like/Dislike removed successfully."},
                 status=status.HTTP_200_OK,
