@@ -1,0 +1,15 @@
+asgiref==3.8.1
+Django==4.2.21
+django-extensions==4.1
+django-filter==25.1
+djangorestframework==3.16.0
+drf-nested-routers==0.94.1
+numpy==2.2.5
+pandas==2.2.3
+psycopg2-binary==2.9.10
+python-dateutil==2.9.0.post0
+pytz==2025.2
+redis==6.0.0
+six==1.17.0
+sqlparse==0.5.3
+tzdata==2025.2

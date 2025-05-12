@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.py~
+
+# Virtualenv
+.env/
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment
+*.env
+.env.*
+!.env.example
+
+# Django / FastAPI
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+*.log
+
+# Logs
+*.log
+*.pot
+*.pid
+*.gz
+*.swp
+
+# Migrations
+**/migrations/
+**/migrations/*.pyc
+**/migrations/*.py
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# mypy / coverage / test stuff
+.mypy_cache/
+.dmypy.json
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.cache/
+
+# Docker
+docker-compose.override.yml
+docker-compose.yml
+Dockerfile
+__docker/
+
+# Redis
+dump.rdb
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# PostgreSQL
+*.pgsql
+*.psql
+
+# JSON / Tokens
+*.token.json
+*.secret.json
+
+# Pydantic
+*.schema.json

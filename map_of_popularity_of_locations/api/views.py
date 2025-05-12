@@ -1,0 +1,215 @@
+from rest_framework.viewsets import ModelViewSet
+from rest_framework.permissions import IsAuthenticated
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import SearchFilter
+from api.models import Location
+from .filters import LocationFilter
+from .serializers import LocationSerializer
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.http import HttpResponse
+import pandas as pd
+from rest_framework import status
+from .models import LikeDislike, LocationSubscription, Review
+from .serializers import ReviewSerializer
+from rest_framework.views import APIView
+import csv
+import io
+from django.core.mail import send_mail
+
+
+class LocationViewSet(ModelViewSet):
+    queryset = Location.objects.all()
+    serializer_class = LocationSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_class = LocationFilter
+    search_fields = ["title", "description"]
+
+    @action(detail=False, methods=["post"], url_path="subscribe")
+    def subscribe(self, request):
+        user = request.user
+        location_id = request.data.get("location_id")
+
+        if not location_id:
+            return Response({"detail": "Location ID is required."}, status=400)
+
+        try:
+            location = Location.objects.get(id=location_id)
+        except Location.DoesNotExist:
+            return Response({"detail": "Location not found."}, status=404)
+
+        if LocationSubscription.objects.filter(user=user, location=location).exists():
+            return Response({"detail": "Already subscribed."}, status=400)
+
+        LocationSubscription.objects.create(user=user, location=location)
+
+        send_mail(
+            subject="Ви підписались на локацію",
+            message=f'Ви успішно підписались на оновлення по локації "{location.title}".',
+            from_email="noreply@example.com",
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+
+        return Response({"detail": "Subscribed successfully."}, status=201)
+
+    @action(detail=True, methods=["post"], url_path="unsubscribe")
+    def unsubscribe(self, request, pk=None):
+        location = self.get_object()
+        user = request.user
+        subscription = LocationSubscription.objects.filter(
+            user=user, location=location
+        ).first()
+        if not subscription:
+            return Response(
+                {"detail": "Not subscribed to this location."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        subscription.delete()
+        return Response(
+            {"detail": "Unsubscribed successfully."}, status=status.HTTP_200_OK
+        )
+
+    @action(detail=False, methods=["get"], url_path="export/json")
+    def export_json(self, request):
+        locations = self.get_queryset()
+        serializer = self.get_serializer(locations, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="export/csv")
+    def export_csv(self, request):
+        locations = self.get_queryset()
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(
+            [
+                "Title",
+                "Description",
+                "Address",
+                "Category",
+                "Average Rating",
+                "Created At",
+                "Updated At",
+            ]
+        )
+
+        for location in locations:
+            writer.writerow(
+                [
+                    location.title,
+                    location.description,
+                    location.address,
+                    location.category,
+                    location.average_rating,
+                    location.created_at,
+                    location.updated_at,
+                ]
+            )
+
+        response = Response(output.getvalue(), content_type="text/csv")
+        response["Content-Disposition"] = "attachment; filename=locations.csv"
+        return response
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self.perform_destroy(instance)
+        return Response({"detail": "Location deleted."}, status=status.HTTP_200_OK)
+
+
+class ReviewViewSet(ModelViewSet):
+    serializer_class = ReviewSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        location_id = self.kwargs.get("location_pk")
+        user = self.request.user
+
+        if location_id:
+            return Review.objects.filter(location_id=location_id)
+        else:
+            subscribed_locations = LocationSubscription.objects.filter(user=user)
+            location_ids = [
+                subscription.location.id for subscription in subscribed_locations
+            ]
+            return Review.objects.filter(location_id__in=location_ids)
+
+    def perform_create(self, serializer):
+        review = serializer.save(
+            user=self.request.user, location_id=self.kwargs["location_pk"]
+        )
+        review.location.update_average_rating()
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        location = instance.location
+        self.perform_destroy(instance)
+        location.update_average_rating()
+        return Response({"detail": "Review deleted."}, status=status.HTTP_200_OK)
+
+
+class LikeDislikeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, review_pk, *args, **kwargs):
+        try:
+            review = Review.objects.get(pk=review_pk)
+        except Review.DoesNotExist:
+            return Response(
+                {"detail": "Review not found."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        likes_count = review.likes_dislikes.filter(is_like=True).count()
+        dislikes_count = review.likes_dislikes.filter(is_like=False).count()
+
+        return Response(
+            {"likes_count": likes_count, "dislikes_count": dislikes_count},
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request, review_pk, *args, **kwargs):
+        try:
+            review = Review.objects.get(pk=review_pk)
+        except Review.DoesNotExist:
+            return Response(
+                {"detail": "Review not found."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        is_like = request.data.get("is_like", None)
+        if is_like is None:
+            return Response(
+                {"detail": "Please provide is_like (True or False)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        like_dislike, created = LikeDislike.objects.get_or_create(
+            user=request.user, review=review
+        )
+
+        if created or like_dislike.is_like != is_like:
+            like_dislike.is_like = is_like
+            like_dislike.save()
+            return Response(
+                {
+                    "detail": f"{'Like' if is_like else 'Dislike'} {'added' if created else 'updated'} successfully."
+                },
+                status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+            )
+        return Response({"detail": "No change made."}, status=status.HTTP_200_OK)
+
+    def delete(self, request, review_pk, *args, **kwargs):
+        try:
+            like_dislike = LikeDislike.objects.get(
+                user=request.user, review__id=review_pk
+            )
+            like_dislike.delete()
+            return Response(
+                {"detail": "Like/Dislike removed successfully."},
+                status=status.HTTP_200_OK,
+            )
+        except LikeDislike.DoesNotExist:
+            return Response(
+                {"detail": "Like/Dislike not found."}, status=status.HTTP_404_NOT_FOUND
+            )
