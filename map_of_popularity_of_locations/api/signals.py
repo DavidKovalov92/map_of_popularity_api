@@ -2,7 +2,7 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.core.cache import cache
 
-from map_of_popularity_of_locations.api.helpers import (
+from .helpers import (
     get_export_csv_cache_key,
     get_likes_dislikes_cache_key,
     get_location_detail_cache_key,
