@@ -11,6 +11,7 @@ from .helpers import (
     get_reviews_cache_key,
     get_subscription_cache_key,
 )
+from .tasks import send_subcribe_email
 from .filters import LocationFilter
 from .serializers import LocationSerializer
 from rest_framework.decorators import action
@@ -75,11 +76,10 @@ class LocationViewSet(ModelViewSet):
         cache.delete(get_export_csv_cache_key())
         return location
 
-    @action(detail=False, methods=["post"], url_path="subscribe")
-    def subscribe(self, request):
+    @action(detail=True, methods=["post"], url_path="subscribe")
+    def subscribe(self, request, pk=None):
         user = request.user
-        location_id = request.data.get("location_id")
-
+        location_id = pk
         if not location_id:
             return Response({"detail": "Location ID is required."}, status=400)
 
@@ -101,13 +101,7 @@ class LocationViewSet(ModelViewSet):
 
         cache.set(cache_key, True, timeout=3600)
 
-        send_mail(
-            subject="Ви підписались на локацію",
-            message=f'Ви успішно підписались на оновлення по локації "{location.title}".',
-            from_email="noreply@example.com",
-            recipient_list=[user.email],
-            fail_silently=False,
-        )
+        send_subcribe_email.delay(user_email=user.email, location_title=location.title)
 
         return Response({"detail": "Subscribed successfully."}, status=201)
 

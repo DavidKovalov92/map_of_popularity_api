@@ -125,6 +125,11 @@ CACHES = {
     }
 }
 
+
+CELERY_BROKER_URL = 'redis://127.0.0.1:6379/1'
+
+CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/1'
+
 AUTH_USER_MODEL = 'registration.CustomUser'
 
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
@@ -152,3 +157,5 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
