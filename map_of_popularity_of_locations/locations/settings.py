@@ -134,8 +134,15 @@ AUTH_USER_MODEL = 'registration.CustomUser'
 
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
 
-EMAIL_BACKEND = 'django.core.mail.backends.filebased.EmailBackend'
-EMAIL_FILE_PATH = '/home/david/Desktop/fastapi_course/popularity_map/map_of_popularity_of_locations/email'
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'kovalovdavid92@gmail.com'      # заміни на свій Gmail
+EMAIL_HOST_PASSWORD = 'tcfw yznr ckwb hkwe'     # див. нижче про App Password
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+
+# EMAIL_FILE_PATH = '/home/david/Desktop/fastapi_course/popularity_map/map_of_popularity_of_locations/email'
 # Internationalization
 # https://docs.djangoproject.com/en/5.2/topics/i18n/
 

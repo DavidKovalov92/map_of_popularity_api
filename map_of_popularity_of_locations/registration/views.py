@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.contrib.auth import login, logout
 from django.contrib.auth import get_user_model
-from .tasks import send_subcribe_email
+from .tasks import send_reset_password_email
 from .utils import Util
 from .serializers import (
     LogoutSerializer,
@@ -78,7 +78,7 @@ class RequestPasswordResetEmailGenericView(GenericAPIView):
             absurl = "http://" + current_site + relativeLink
             email_body = "Hello, \n Use link below to reset your password \n" + absurl
 
-            send_subcribe_email.delay(email_body=email_body, user_email=user.email)
+            send_reset_password_email.delay(email_body=email_body, user_email=user.email)
         return Response(
             {"success": "We have sent you a link to reset your password."},
             status=status.HTTP_200_OK,
